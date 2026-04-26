@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TTC Missed Connections</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
+    #map { position: absolute; inset: 0; }
+
+    #wordmark {
+      position: fixed; top: 12px; left: 52px; z-index: 1000;
+      background: #DA291C; color: #fff; padding: 6px 12px;
+      border-radius: 6px; font-size: 13px; font-weight: 600;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25); pointer-events: none;
+    }
+
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(26,26,26,0.82); color: #fff; padding: 8px 16px;
+      border-radius: 20px; font-size: 13px; z-index: 1000;
+      transition: opacity 0.4s; white-space: nowrap; backdrop-filter: blur(4px);
+    }
+    #toast.hidden { opacity: 0; pointer-events: none; }
+
+    /* Panel */
+    #panel {
+      position: fixed; top: 0; right: 0; width: 340px; height: 100%;
+      background: #fff; box-shadow: -2px 0 20px rgba(0,0,0,0.15);
+      transform: translateX(100%); transition: transform 0.25s ease;
+      z-index: 900; display: flex; flex-direction: column;
+    }
+    #panel.open { transform: translateX(0); }
+
+    .panel-header {
+      background: #1a1a1a; color: #fff; padding: 14px 16px;
+      display: flex; align-items: flex-start; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .panel-stop-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin-bottom: 3px; }
+    .panel-stop-name { font-size: 15px; font-weight: 600; line-height: 1.3; }
+    .close-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 18px; padding: 0 0 0 12px; line-height: 1; flex-shrink: 0; }
+    .close-btn:hover { color: #fff; }
+
+    .panel-body { flex: 1; overflow-y: auto; padding: 12px; }
+
+    .refresh-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .last-updated { font-size: 12px; color: #aaa; }
+    .refresh-btn { font-size: 13px; color: #DA291C; background: none; border: none; cursor: pointer; padding: 0; font-weight: 500; }
+    .refresh-btn:hover { text-decoration: underline; }
+
+    .vehicle-row { background: #f9f9f9; border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; align-items: flex-start; gap: 10px; }
+    .vehicle-route { background: #DA291C; color: #fff; font-size: 11px; font-weight: 700; border-radius: 3px; padding: 3px 7px; white-space: nowrap; flex-shrink: 0; margin-top: 1px; }
+    .vehicle-route.streetcar { background: #1565C0; }
+    .vehicle-info { flex: 1; min-width: 0; }
+    .vehicle-id { font-size: 14px; font-weight: 600; }
+    .vehicle-dir { font-size: 12px; color: #888; margin-top: 2px; }
+    .vehicle-detail { font-size: 12px; color: #aaa; margin-top: 2px; }
+    .vehicle-time { text-align: right; white-space: nowrap; flex-shrink: 0; }
+    .ago { font-size: 14px; font-weight: 600; }
+    .ago-label { font-size: 11px; color: #aaa; margin-top: 1px; }
+    .dir-badge { display: inline-block; font-size: 10px; background: #eee; color: #666; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
+
+    .empty-state { text-align: center; padding: 2rem 1rem; color: #888; font-size: 14px; line-height: 1.6; }
+    .empty-icon { font-size: 28px; margin-bottom: 8px; }
+    .loading-state { text-align: center; padding: 2rem; color: #aaa; font-size: 14px; }
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #eee; border-top-color: #DA291C; border-radius: 50%; animation: spin 0.7s linear infinite; margin-bottom: 8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-state { color: #b91c1c; font-size: 14px; padding: 1rem; }
+
+    @media (max-width: 600px) {
+      #panel { width: 100%; height: 55%; top: auto; bottom: 0; right: 0; transform: translateY(110%); box-shadow: 0 -4px 20px rgba(0,0,0,0.15); }
+      #panel.open { transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="wordmark">TTC — What did I just miss?</div>
+<div id="toast" class="hidden"></div>
+
+<div id="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-stop-label">Selected stop</div>
+      <div class="panel-stop-name" id="panel-stop-name">—</div>
+    </div>
+    <button class="close-btn" onclick="closePanel()">✕</button>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+const BUS_COLOR = '#DA291C';
+const STREETCAR_COLOR = '#1565C0';
+function isStreetcar(tag) { const n = parseInt(tag); return n >= 500 && n <= 519; }
+
+const map = L.map('map').setView([43.718, -79.38], 16);
+map.locate({ setView: true, maxZoom: 17 });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap contributors', maxZoom: 19
+}).addTo(map);
+
+const clusterGroup = L.markerClusterGroup({
+  maxClusterRadius: 40,
+  disableClusteringAtZoom: 17,
+  showCoverageOnHover: false,
+  iconCreateFunction(c) {
+    const n = c.getChildCount();
+    return L.divIcon({
+      html: `<div style="background:#DA291C;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)">${n}</div>`,
+      className: '', iconSize: [26, 26], iconAnchor: [13, 13]
+    });
+  }
+});
+map.addLayer(clusterGroup);
+
+// stop key: `${lat.toFixed(4)},${lon.toFixed(4)}`
+// entry: { routeTag, routeTitle, dirTag, dirTitle, stopTag, stopIdx, stopsInDir }
+const stopIndex = new Map();
+const markerMap = new Map();
+const loadedRoutes = new Set();
+let loadQueue = [];
+let loadRunning = false;
+let selectedKey = null;
+let lastUpdate = null;
+
+function toArr(x) { return !x ? [] : Array.isArray(x) ? x : [x]; }
+
+function dist(lat1, lon1, lat2, lon2) {
+  const R = 6371000, p = Math.PI / 180;
+  const dLat = (lat2 - lat1) * p, dLon = (lon2 - lon1) * p;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*p) * Math.cos(lat2*p) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function getHeading(deg) {
+  return ['N','NE','E','SE','S','SW','W','NW'][Math.round(((+deg % 360) + 360) % 360 / 45) % 8];
+}
+
+async function ttcFetch(params) {
+  const resp = await fetch('/ttc?' + new URLSearchParams(params));
+  if (!resp.ok) throw new Error(`Proxy error ${resp.status}`);
+  return resp.json();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+}
+function hideToast() { document.getElementById('toast').classList.add('hidden'); }
+
+async function init() {
+  showToast('Connecting to TTC…');
+  try {
+    const data = await ttcFetch({ command: 'routeList' });
+    loadQueue = toArr(data.route).map(r => ({ tag: r.tag, title: r.title }));
+    startLoading();
+  } catch (e) {
+    showToast('Could not connect — is server.js running?');
+  }
+}
+
+async function startLoading() {
+  if (loadRunning) return;
+  loadRunning = true;
+  const total = loadedRoutes.size + loadQueue.length;
+
+  while (loadQueue.length > 0) {
+    const batch = loadQueue.splice(0, 10);
+    showToast(`Loading stops… ${loadedRoutes.size} / ${total}`);
+    const markers = (await Promise.all(batch.map(r => loadRoute(r.tag, r.title)))).flat();
+    if (markers.length) clusterGroup.addLayers(markers);
+  }
+
+  hideToast();
+  loadRunning = false;
+}
+
+async function loadRoute(routeTag, routeTitle) {
+  if (loadedRoutes.has(routeTag)) return [];
+  loadedRoutes.add(routeTag);
+
+  let data;
+  try {
+    data = await ttcFetch({ command: 'routeConfig', r: routeTag });
+  } catch (e) {
+    loadedRoutes.delete(routeTag);
+    return [];
+  }
+
+  const route = data.route;
+  if (!route) return [];
+
+  const stopMap = {};
+  toArr(route.stop).forEach(s => { stopMap[s.tag] = s; });
+
+  const newMarkers = [];
+  toArr(route.direction).forEach(dir => {
+    const dirStops = toArr(dir.stop).map(s => stopMap[s.tag]).filter(Boolean);
+    dirStops.forEach((stop, idx) => {
+      const lat = parseFloat(stop.lat), lon = parseFloat(stop.lon);
+      if (isNaN(lat) || isNaN(lon)) return;
+      const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+
+      if (!stopIndex.has(key)) stopIndex.set(key, { lat, lon, title: stop.title, entries: [] });
+      stopIndex.get(key).entries.push({ routeTag, routeTitle, dirTag: dir.tag, dirTitle: dir.title, stopTag: stop.tag, stopIdx: idx, stopsInDir: dirStops });
+
+      const color = isStreetcar(routeTag) ? STREETCAR_COLOR : BUS_COLOR;
+      if (!markerMap.has(key)) {
+        const m = L.circleMarker([lat, lon], {
+          radius: 5, fillColor: color, fillOpacity: 0.9, color: '#fff', weight: 1.5
+        });
+        m.bindTooltip(stop.title, { direction: 'top', offset: [0, -6] });
+        m.on('click', e => { L.DomEvent.stopPropagation(e); onStopClick(key); });
+        markerMap.set(key, m);
+        newMarkers.push(m);
+      } else if (isStreetcar(routeTag)) {
+        markerMap.get(key).setStyle({ fillColor: STREETCAR_COLOR });
+      }
+    });
+  });
+
+  return newMarkers;
+}
+
+function onStopClick(key) {
+  selectedKey = key;
+  document.getElementById('panel-stop-name').textContent = stopIndex.get(key).title;
+  document.getElementById('panel-body').innerHTML = '<div class="loading-state"><div class="spinner"></div><div>Fetching vehicles…</div></div>';
+  document.getElementById('panel').classList.add('open');
+  fetchMissed(key);
+}
+
+function closePanel() {
+  document.getElementById('panel').classList.remove('open');
+  selectedKey = null;
+}
+
+map.on('click', closePanel);
+
+async function fetchMissed(key) {
+  const stop = stopIndex.get(key);
+  const routeTags = [...new Set(stop.entries.map(e => e.routeTag))];
+
+  try {
+    const results = await Promise.allSettled(
+      routeTags.map(tag => ttcFetch({ command: 'vehicleLocations', r: tag, t: 0 }))
+    );
+
+    const seen = new Set();
+    const missed = [];
+
+    results.forEach((result, i) => {
+      if (result.status !== 'fulfilled') return;
+      const vehicles = toArr(result.value.vehicle);
+      const routeTag = routeTags[i];
+
+      vehicles.forEach(v => {
+        const vLat = parseFloat(v.lat), vLon = parseFloat(v.lon);
+
+        for (const entry of stop.entries.filter(e => e.routeTag === routeTag)) {
+          const s = entry.stopsInDir[entry.stopIdx];
+          const sLat = parseFloat(s.lat), sLon = parseFloat(s.lon);
+          const dToStop = dist(vLat, vLon, sLat, sLon);
+          const nextStops = entry.stopsInDir.slice(entry.stopIdx + 1);
+
+          let hit = nextStops.length === 0
+            ? dToStop < 2000
+            : (() => {
+                const closestNext = Math.min(...nextStops.map(n => dist(vLat, vLon, parseFloat(n.lat), parseFloat(n.lon))));
+                return (closestNext < dToStop && closestNext < 800) || dToStop < 400;
+              })();
+
+          const uid = `${routeTag}-${v.id}-${entry.dirTag}`;
+          if (hit && !seen.has(uid)) { seen.add(uid); missed.push({ v, entry, dToStop }); }
+        }
+      });
+    });
+
+    missed.sort((a, b) => a.dToStop - b.dToStop);
+
+    // Keep only the closest missed vehicle per route
+    const byRoute = new Map();
+    missed.forEach(m => { if (!byRoute.has(m.entry.routeTag)) byRoute.set(m.entry.routeTag, m); });
+
+    lastUpdate = new Date();
+    renderMissed([...byRoute.values()]);
+  } catch (e) {
+    document.getElementById('panel-body').innerHTML = `<div class="error-state">Error: ${e.message}</div>`;
+  }
+}
+
+function renderMissed(missed) {
+  const time = lastUpdate.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  let html = `<div class="refresh-row">
+    <span class="last-updated">Updated ${time}</span>
+    <button class="refresh-btn" onclick="if(selectedKey) fetchMissed(selectedKey)">↻ Refresh</button>
+  </div>`;
+
+  if (!missed.length) {
+    html += `<div class="empty-state"><div class="empty-icon">🚌</div><p>No vehicles detected that just left this stop.<br>They may be further ahead, or service is sparse right now.</p></div>`;
+  } else {
+    missed.forEach(({ v, entry, dToStop }) => {
+      const d = Math.round(dToStop);
+      const speedKmHr = parseFloat(v.speedKmHr || 0);
+      const speedMs = speedKmHr / 3.6;
+      const heading = v.heading ? getHeading(v.heading) : '';
+      const estSec = speedMs >= 1 ? Math.round(dToStop / speedMs) : null;
+      const age = estSec !== null
+        ? (estSec < 60 ? `~${estSec}s` : `~${Math.round(estSec / 60)}min`)
+        : `${d}m`;
+      const type = isStreetcar(entry.routeTag) ? 'streetcar' : 'bus';
+      html += `<div class="vehicle-row">
+        <span class="vehicle-route${type === 'streetcar' ? ' streetcar' : ''}">${entry.routeTag}</span>
+        <div class="vehicle-info">
+          <div class="vehicle-id">Vehicle ${v.id}${heading ? `<span class="dir-badge">${heading}</span>` : ''}</div>
+          <div class="vehicle-dir">${type === 'streetcar' ? 'Streetcar' : 'Bus'} · ${entry.dirTitle}</div>
+          <div class="vehicle-detail">${d}m away${speedKmHr > 0 ? ` · ${Math.round(speedKmHr)} km/h` : ''}</div>
+        </div>
+        <div class="vehicle-time">
+          <div class="ago">${age}</div>
+          <div class="ago-label">${estSec !== null ? 'ago (est.)' : 'away'}</div>
+        </div>
+      </div>`;
+    });
+  }
+
+  document.getElementById('panel-body').innerHTML = html;
+}
+
+init();
+</script>
+</body>
+</html>
