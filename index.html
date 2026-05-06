@@ -145,6 +145,19 @@ function getHeading(deg) {
   return ['N','NE','E','SE','S','SW','W','NW'][Math.round(((+deg % 360) + 360) % 360 / 45) % 8];
 }
 
+function bearing(lat1, lon1, lat2, lon2) {
+  const p = Math.PI / 180;
+  const dLon = (lon2 - lon1) * p;
+  const y = Math.sin(dLon) * Math.cos(lat2 * p);
+  const x = Math.cos(lat1 * p) * Math.sin(lat2 * p) - Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos(dLon);
+  return ((Math.atan2(y, x) / p) + 360) % 360;
+}
+
+function angleDiff(a, b) {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
 async function ttcFetch(params) {
   const resp = await fetch('/ttc?' + new URLSearchParams(params));
   if (!resp.ok) throw new Error(`Proxy error ${resp.status}`);
@@ -271,14 +284,29 @@ async function fetchMissed(key) {
           const s = entry.stopsInDir[entry.stopIdx];
           const sLat = parseFloat(s.lat), sLon = parseFloat(s.lon);
           const dToStop = dist(vLat, vLon, sLat, sLon);
+          const prevStops = entry.stopsInDir.slice(0, entry.stopIdx);
           const nextStops = entry.stopsInDir.slice(entry.stopIdx + 1);
 
-          let hit = nextStops.length === 0
-            ? dToStop < 2000
-            : (() => {
-                const closestNext = Math.min(...nextStops.map(n => dist(vLat, vLon, parseFloat(n.lat), parseFloat(n.lon))));
-                return (closestNext < dToStop && closestNext < 800) || dToStop < 400;
-              })();
+          // Check if vehicle heading aligns with the route direction past this stop
+          const speedKmHr = parseFloat(v.speedKmHr || 0);
+          let movingAlongRoute = false;
+          if (speedKmHr > 1) {
+            const refStop = nextStops[0] ?? prevStops[prevStops.length - 1];
+            if (refStop) {
+              const routeBearing = nextStops.length > 0
+                ? bearing(sLat, sLon, parseFloat(refStop.lat), parseFloat(refStop.lon))
+                : bearing(parseFloat(prevStops[prevStops.length - 1].lat), parseFloat(prevStops[prevStops.length - 1].lon), sLat, sLon);
+              movingAlongRoute = angleDiff(parseFloat(v.heading), routeBearing) < 90;
+            }
+          }
+
+          let hit;
+          if (nextStops.length === 0) {
+            hit = dToStop < 2000 && movingAlongRoute;
+          } else {
+            const closestNext = Math.min(...nextStops.map(n => dist(vLat, vLon, parseFloat(n.lat), parseFloat(n.lon))));
+            hit = (closestNext < dToStop && closestNext < 800) || (dToStop < 400 && movingAlongRoute);
+          }
 
           const uid = `${routeTag}-${v.id}-${entry.dirTag}`;
           if (hit && !seen.has(uid)) { seen.add(uid); missed.push({ v, entry, dToStop }); }
